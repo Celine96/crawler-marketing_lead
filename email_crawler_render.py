@@ -78,8 +78,16 @@ class EmailCrawler:
             self.sheet = client.open_by_key(self.spreadsheet_key).sheet1
             logger.info("✅ 구글 시트 연결 성공")
             return True
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ JSON 파싱 에러: {e}")
+            logger.error(f"문제 위치: line {e.lineno}, column {e.colno}")
+            logger.error("GOOGLE_SHEETS_CREDENTIALS 환경 변수를 확인하세요!")
+            return False
         except Exception as e:
             logger.error(f"❌ 구글 시트 연결 실패: {e}")
+            logger.error(f"에러 타입: {type(e).__name__}")
+            import traceback
+            logger.error(f"상세 정보:\n{traceback.format_exc()}")
             return False
     
     def setup_selenium(self):
