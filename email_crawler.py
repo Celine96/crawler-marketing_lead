@@ -1,5 +1,5 @@
 """
-영업 리드 이메일 크롤러
+영업 리드 이메일 크롤러 - Render 배포 버전
 - 구글시트에서 회사 정보 읽기
 - 네이버 플레이스/지도에서 이메일 검색
 - 회사 홈페이지에서 이메일 추출
@@ -15,9 +15,13 @@ import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import logging
+import os
+import json
+import tempfile
 
 # 로깅 설정
 logging.basicConfig(
@@ -28,16 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 class EmailCrawler:
-    def __init__(self, spreadsheet_key, credentials_file):
+    def __init__(self, spreadsheet_key, credentials_json=None):
         """
         이메일 크롤러 초기화
         
         Args:
             spreadsheet_key: 구글 시트 ID
-            credentials_file: 구글 서비스 계정 인증 파일 경로
+            credentials_json: 구글 서비스 계정 JSON (문자열 또는 딕셔너리)
         """
         self.spreadsheet_key = spreadsheet_key
-        self.credentials_file = credentials_file
+        self.credentials_json = credentials_json
         self.sheet = None
         self.driver = None
         
@@ -47,15 +51,27 @@ class EmailCrawler:
         )
         
     def connect_google_sheet(self):
-        """구글 시트 연결"""
+        """구글 시트 연결 (환경 변수 지원)"""
         try:
             scope = [
                 'https://spreadsheets.google.com/feeds',
                 'https://www.googleapis.com/auth/drive'
             ]
             
-            creds = Credentials.from_service_account_file(
-                self.credentials_file, 
+            # 환경 변수에서 credentials 로드
+            if isinstance(self.credentials_json, str):
+                # JSON 문자열인 경우
+                credentials_dict = json.loads(self.credentials_json)
+            elif isinstance(self.credentials_json, dict):
+                # 이미 딕셔너리인 경우
+                credentials_dict = self.credentials_json
+            else:
+                # 파일 경로인 경우 (로컬 개발용)
+                with open(self.credentials_json, 'r') as f:
+                    credentials_dict = json.load(f)
+            
+            creds = Credentials.from_service_account_info(
+                credentials_dict,
                 scopes=scope
             )
             client = gspread.authorize(creds)
@@ -67,28 +83,49 @@ class EmailCrawler:
             return False
     
     def setup_selenium(self):
-        """Selenium 웹드라이버 설정"""
+        """Selenium 웹드라이버 설정 (Render 환경 최적화)"""
         try:
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-            
             chrome_options = Options()
-            chrome_options.add_argument('--headless')  # 백그라운드 실행
+            
+            # Render 환경을 위한 필수 옵션
+            chrome_options.add_argument('--headless=new')  # 새로운 headless 모드
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--disable-software-rasterizer')
+            chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
             chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # webdriver-manager로 자동 설치
-            service = Service(ChromeDriverManager().install())
+            # 메모리 최적화
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--single-process')
+            chrome_options.add_argument('--disable-background-networking')
+            
+            # 로깅 줄이기
+            chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+            chrome_options.add_argument('--log-level=3')
+            
+            # ChromeDriver 경로 (Render는 /usr/local/bin에 설치됨)
+            service = Service('/usr/local/bin/chromedriver')
+            
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            self.driver.set_page_load_timeout(30)
             
             logger.info("✅ Selenium 드라이버 설정 완료")
             return True
         except Exception as e:
             logger.error(f"❌ Selenium 설정 실패: {e}")
-            return False
+            # 로컬 환경 fallback (webdriver-manager 사용)
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                logger.info("✅ Selenium 드라이버 설정 완료 (로컬 모드)")
+                return True
+            except:
+                return False
     
     def search_naver_place(self, company_name):
         """
@@ -292,6 +329,9 @@ class EmailCrawler:
             
             logger.info(f"📊 총 {total_count}개 회사 크롤링 시작")
             
+            # 환경 변수에서 딜레이 시간 가져오기
+            crawl_delay = int(os.getenv('CRAWL_DELAY', '3'))
+            
             for idx in range(start_row - 1, end_row):
                 row_num = idx + 1
                 row_data = all_data[idx]
@@ -320,7 +360,7 @@ class EmailCrawler:
                     self.sheet.update_cell(row_num, email_col + 2, 'NONE')
                 
                 # API 제한 방지를 위한 대기
-                time.sleep(3)
+                time.sleep(crawl_delay)
             
             logger.info(f"\n✅ 크롤링 완료!")
             logger.info(f"📊 성공: {success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
@@ -337,26 +377,31 @@ class EmailCrawler:
 
 
 def main():
-    """메인 실행 함수"""
+    """메인 실행 함수 - 환경 변수 사용"""
     
     try:
-        from config import Config
+        # 환경 변수에서 설정 읽기
+        SPREADSHEET_KEY = os.getenv('SPREADSHEET_KEY')
+        CREDENTIALS_JSON = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
+        START_ROW = int(os.getenv('START_ROW', '2'))
         
-        # 설정 유효성 검사
-        Config.validate()
+        if not SPREADSHEET_KEY:
+            raise ValueError("SPREADSHEET_KEY 환경 변수가 설정되지 않았습니다")
+        
+        if not CREDENTIALS_JSON:
+            raise ValueError("GOOGLE_SHEETS_CREDENTIALS 환경 변수가 설정되지 않았습니다")
         
         logger.info("=" * 60)
-        logger.info("🚀 이메일 크롤러 시작")
+        logger.info("🚀 이메일 크롤러 시작 (Render 모드)")
         logger.info("=" * 60)
-        logger.info(f"📊 구글 시트 ID: {Config.SPREADSHEET_KEY[:20]}...")
-        logger.info(f"🔑 인증 파일: {Config.CREDENTIALS_FILE}")
-        logger.info(f"⏱️  크롤링 딜레이: {Config.CRAWL_DELAY}초")
+        logger.info(f"📊 구글 시트 ID: {SPREADSHEET_KEY[:20]}...")
+        logger.info(f"⏱️  크롤링 딜레이: {os.getenv('CRAWL_DELAY', '3')}초")
         logger.info("=" * 60)
         
         # 크롤러 초기화
         crawler = EmailCrawler(
-            spreadsheet_key=Config.SPREADSHEET_KEY,
-            credentials_file=Config.CREDENTIALS_FILE
+            spreadsheet_key=SPREADSHEET_KEY,
+            credentials_json=CREDENTIALS_JSON
         )
         
         # 구글 시트 연결
@@ -371,7 +416,7 @@ def main():
         
         # 전체 크롤링 실행
         logger.info("\n📝 크롤링을 시작합니다...\n")
-        crawler.crawl_all_companies(start_row=Config.START_ROW)
+        crawler.crawl_all_companies(start_row=START_ROW)
         
         logger.info("\n" + "=" * 60)
         logger.info("✅ 모든 작업이 완료되었습니다!")
@@ -379,16 +424,11 @@ def main():
         
     except KeyboardInterrupt:
         logger.info("\n⚠️ 사용자에 의해 중단되었습니다")
-    except FileNotFoundError as e:
-        logger.error(f"❌ 파일을 찾을 수 없습니다: {e}")
-        logger.error("💡 .env 파일과 credentials.json 파일을 확인해주세요")
-    except ValueError as e:
-        logger.error(f"❌ 설정 오류: {e}")
-        logger.error("💡 .env 파일의 SPREADSHEET_KEY를 확인해주세요")
     except Exception as e:
         logger.error(f"❌ 예상치 못한 오류 발생: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        raise
     finally:
         if 'crawler' in locals():
             crawler.close()
