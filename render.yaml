@@ -1,22 +1,54 @@
-services:
+# ========================================
+# 이메일 크롤러 Render 배포 설정
+# ========================================
 
-  # ========================================
-  # 2. 자동 크롤러 (5분마다 실행)
-  # ========================================
+services:
+  # 주간 크롤러 (매주 월요일 오전 9시 실행)
   - type: cron
-    name: rexa-crawler-5min
-    runtime: python
-    schedule: "*/5 * * * *"  # 5분마다 실행 (예: 09:00, 09:05, 09:10...)
-    buildCommand: pip install -r requirements.txt
-    startCommand: python crawler.py
+    name: email-crawler-weekly
+    runtime: docker
+    schedule: "0 9 * * 1"  # 매주 월요일 오전 9시 (KST 기준 18시)
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: NAVER_CLIENT_ID
-        sync: false
-      - key: NAVER_CLIENT_SECRET
+      - key: SPREADSHEET_KEY
         sync: false
       - key: GOOGLE_SHEETS_CREDENTIALS
         sync: false
-      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+      - key: START_ROW
+        value: "2"
+      - key: CRAWL_DELAY
+        value: "3"
+      - key: LOG_LEVEL
+        value: "INFO"
+
+  # 수동 트리거용 웹 서비스 (선택사항)
+  # API 엔드포인트로 수동 실행 가능
+  - type: web
+    name: email-crawler-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: python api_server.py
+    envVars:
+      - key: SPREADSHEET_KEY
         sync: false
+      - key: GOOGLE_SHEETS_CREDENTIALS
+        sync: false
+      - key: START_ROW
+        value: "2"
+      - key: CRAWL_DELAY
+        value: "3"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: API_SECRET_KEY
+        sync: false
+
+# 참고:
+# 1. cron 일정 형식: "분 시 일 월 요일"
+# 2. Render는 UTC 기준이므로 KST 시간에서 -9시간
+#    예: KST 18시 = UTC 9시
+# 3. 매일 실행: "0 9 * * *"
+# 4. 매주 월요일: "0 9 * * 1"
+# 5. 매월 1일: "0 9 1 * *"
