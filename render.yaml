@@ -6,7 +6,7 @@
 services:
   # 주간 크롤러 (매주 월요일 오전 9시 실행)
   - type: cron
-    name: email-crawler-weekly
+    name: crawler-marketing_lead
     runtime: docker
     schedule: "0 9 * * 1"  # 매주 월요일 오전 9시 (UTC) = KST 18시
     dockerfilePath: ./Dockerfile
