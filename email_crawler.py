@@ -99,7 +99,6 @@ class EmailCrawler:
             chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
             # 메모리 최적화
-            chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--single-process')
             chrome_options.add_argument('--disable-background-networking')
             
@@ -107,8 +106,31 @@ class EmailCrawler:
             chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
             chrome_options.add_argument('--log-level=3')
             
-            # ChromeDriver 경로 (Render는 /usr/local/bin에 설치됨)
-            service = Service('/usr/local/bin/chromedriver')
+            # Chromium 바이너리 경로 설정 (Render 환경)
+            chrome_binary = os.getenv('CHROME_BIN', '/usr/bin/chromium')
+            chromedriver_path = os.getenv('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
+            
+            # Chromium 바이너리 위치 지정
+            if os.path.exists(chrome_binary):
+                chrome_options.binary_location = chrome_binary
+                logger.info(f"✅ Chrome binary: {chrome_binary}")
+            
+            # ChromeDriver 서비스 설정
+            try:
+                if os.path.exists(chromedriver_path):
+                    service = Service(chromedriver_path)
+                    logger.info(f"✅ ChromeDriver: {chromedriver_path}")
+                elif os.path.exists('/usr/local/bin/chromedriver'):
+                    service = Service('/usr/local/bin/chromedriver')
+                    logger.info("✅ ChromeDriver: /usr/local/bin/chromedriver")
+                else:
+                    # fallback: webdriver-manager 사용
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    service = Service(ChromeDriverManager().install())
+                    logger.info("✅ ChromeDriver: webdriver-manager")
+            except:
+                service = Service()  # 기본 경로 사용
+                logger.info("✅ ChromeDriver: default path")
             
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             self.driver.set_page_load_timeout(30)
@@ -117,15 +139,9 @@ class EmailCrawler:
             return True
         except Exception as e:
             logger.error(f"❌ Selenium 설정 실패: {e}")
-            # 로컬 환경 fallback (webdriver-manager 사용)
-            try:
-                from webdriver_manager.chrome import ChromeDriverManager
-                service = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                logger.info("✅ Selenium 드라이버 설정 완료 (로컬 모드)")
-                return True
-            except:
-                return False
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     def search_naver_place(self, company_name):
         """
