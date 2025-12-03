@@ -344,13 +344,14 @@ class EmailCrawler:
             representative: 대표자명 (선택)
             
         Returns:
-            dict: {email, source, confidence}
+            dict: {email, source, source_url, confidence}
         """
         logger.info(f"🔍 검색 시작: {company_name}")
         
         result = {
             'email': None,
             'source': None,
+            'source_url': None,
             'confidence': 'LOW'
         }
         
@@ -360,6 +361,7 @@ class EmailCrawler:
         if naver_result['email']:
             result['email'] = naver_result['email']
             result['source'] = '네이버 플레이스'
+            result['source_url'] = f"https://search.naver.com/search.naver?query={company_name}"
             result['confidence'] = 'HIGH'
             logger.info(f"✅ 네이버에서 이메일 발견: {result['email']}")
             return result
@@ -370,6 +372,7 @@ class EmailCrawler:
             if website_email:
                 result['email'] = website_email
                 result['source'] = '회사 홈페이지'
+                result['source_url'] = naver_result['homepage']
                 result['confidence'] = 'MEDIUM'
                 logger.info(f"✅ 홈페이지에서 이메일 발견: {result['email']}")
                 return result
@@ -388,11 +391,12 @@ class EmailCrawler:
                 logger.info("이메일 컬럼이 이미 존재합니다")
                 return headers.index('대표이메일(자동수집)') + 1
             
-            # 새 컬럼 추가 (I 컬럼 다음)
+            # 새 컬럼 추가
             new_col_index = len(headers) + 1
             self.sheet.update_cell(1, new_col_index, '대표이메일(자동수집)')
             self.sheet.update_cell(1, new_col_index + 1, '수집출처')
-            self.sheet.update_cell(1, new_col_index + 2, '신뢰도')
+            self.sheet.update_cell(1, new_col_index + 2, '출처URL')
+            self.sheet.update_cell(1, new_col_index + 3, '신뢰도')
             
             logger.info(f"✅ 이메일 컬럼 추가 완료 (컬럼 {new_col_index})")
             return new_col_index
@@ -462,11 +466,14 @@ class EmailCrawler:
                     if result['email']:
                         self.sheet.update_cell(row_num, email_col, result['email'])
                         self.sheet.update_cell(row_num, email_col + 1, result['source'])
-                        self.sheet.update_cell(row_num, email_col + 2, result['confidence'])
+                        self.sheet.update_cell(row_num, email_col + 2, result['source_url'] or '')
+                        self.sheet.update_cell(row_num, email_col + 3, result['confidence'])
                         success_count += 1
                     else:
                         self.sheet.update_cell(row_num, email_col, '미발견')
-                        self.sheet.update_cell(row_num, email_col + 2, 'NONE')
+                        self.sheet.update_cell(row_num, email_col + 1, '')
+                        self.sheet.update_cell(row_num, email_col + 2, '')
+                        self.sheet.update_cell(row_num, email_col + 3, 'NONE')
                     
                     # API 제한 방지를 위한 대기
                     time.sleep(crawl_delay)
