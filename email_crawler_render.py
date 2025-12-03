@@ -259,6 +259,13 @@ class EmailCrawler:
             except Exception as e:
                 logger.warning(f"플레이스 정보 추출 중 오류: {e}")
             
+            # 메모리 정리
+            try:
+                self.driver.execute_script("window.stop();")
+                self.driver.delete_all_cookies()
+            except:
+                pass
+            
             return result
             
         except Exception as e:
@@ -302,6 +309,13 @@ class EmailCrawler:
             
             # 유효한 이메일만 필터링
             emails = [email for email in emails if self.is_valid_email(email)]
+            
+            # 메모리 정리
+            try:
+                self.driver.execute_script("window.stop();")
+                self.driver.delete_all_cookies()
+            except:
+                pass
             
             # 유효한 이메일 필터링 (info@, ceo@, contact@ 등 우선)
             priority_keywords = ['ceo', 'info', 'contact', 'admin', 'master']
@@ -387,14 +401,14 @@ class EmailCrawler:
             logger.error(f"❌ 컬럼 추가 실패: {e}")
             return None
     
-    def crawl_all_companies(self, start_row=2, end_row=None, batch_size=10):
+    def crawl_all_companies(self, start_row=2, end_row=None, batch_size=5):
         """
         전체 회사 리스트 크롤링 (배치 처리)
         
         Args:
             start_row: 시작 행 (기본값: 2, 헤더 제외)
             end_row: 종료 행 (None이면 전체)
-            batch_size: 배치 크기 (기본값: 10, 메모리 절약)
+            batch_size: 배치 크기 (기본값: 5, 메모리 절약)
         """
         try:
             # 이메일 컬럼 추가
@@ -490,7 +504,7 @@ def main():
         SPREADSHEET_KEY = os.getenv('SPREADSHEET_KEY')
         CREDENTIALS_JSON = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
         START_ROW = int(os.getenv('START_ROW', '2'))
-        BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))  # 기본값: 10개씩
+        BATCH_SIZE = int(os.getenv('BATCH_SIZE', '5'))  # 기본값: 5개씩 (메모리 절약)
         
         if not SPREADSHEET_KEY:
             raise ValueError("SPREADSHEET_KEY 환경 변수가 설정되지 않았습니다")
