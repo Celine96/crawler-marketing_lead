@@ -49,6 +49,41 @@ class EmailCrawler:
         self.email_pattern = re.compile(
             r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
         )
+    
+    def is_valid_email(self, email):
+        """
+        이메일 유효성 검증
+        - 이미지 파일 제외 (.png, .jpg 등)
+        - 일반적인 스팸 도메인 제외
+        - 최소 길이 제한
+        """
+        if not email or len(email) < 6:
+            return False
+        
+        # 이미지 파일 확장자 제외
+        image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico']
+        if any(email.lower().endswith(ext) for ext in image_extensions):
+            return False
+        
+        # 파일 확장자가 포함된 경우 제외
+        if any(ext in email.lower() for ext in ['.png@', '.jpg@', '@2x.', '_icon']):
+            return False
+        
+        # 제외할 도메인
+        excluded_domains = ['example.com', 'test.com', 'localhost']
+        if any(domain in email.lower() for domain in excluded_domains):
+            return False
+        
+        # @ 기호가 정확히 1개
+        if email.count('@') != 1:
+            return False
+        
+        # 도메인 부분이 최소 3글자 이상
+        domain = email.split('@')[1]
+        if len(domain) < 3 or '.' not in domain:
+            return False
+        
+        return True
         
     def connect_google_sheet(self):
         """구글 시트 연결 (환경 변수 지원)"""
@@ -102,13 +137,32 @@ class EmailCrawler:
             chrome_options.add_argument('--disable-gpu')
             chrome_options.add_argument('--disable-software-rasterizer')
             chrome_options.add_argument('--disable-extensions')
-            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--window-size=1280,720')  # 해상도 낮춤
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
             chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # 메모리 최적화
+            # 메모리 최적화 (강화)
             chrome_options.add_argument('--single-process')
             chrome_options.add_argument('--disable-background-networking')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-breakpad')
+            chrome_options.add_argument('--disable-component-extensions-with-background-pages')
+            chrome_options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--enable-features=NetworkService,NetworkServiceInProcess')
+            chrome_options.add_argument('--force-color-profile=srgb')
+            chrome_options.add_argument('--hide-scrollbars')
+            chrome_options.add_argument('--metrics-recording-only')
+            chrome_options.add_argument('--mute-audio')
+            
+            # 이미지/CSS 로딩 비활성화 (메모리 절약)
+            prefs = {
+                'profile.managed_default_content_settings.images': 2,  # 이미지 차단
+                'profile.managed_default_content_settings.stylesheets': 2,  # CSS 차단
+            }
+            chrome_options.add_experimental_option('prefs', prefs)
             
             # 로깅 줄이기
             chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
@@ -141,7 +195,7 @@ class EmailCrawler:
                 logger.info("✅ ChromeDriver: default path")
             
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.set_page_load_timeout(30)
+            self.driver.set_page_load_timeout(15)  # 30초 → 15초로 단축
             
             logger.info("✅ Selenium 드라이버 설정 완료")
             return True
@@ -191,10 +245,12 @@ class EmailCrawler:
                 page_source = self.driver.page_source
                 emails = self.email_pattern.findall(page_source)
                 
-                # 네이버 관련 이메일 제외
+                # 유효한 이메일 필터링
                 valid_emails = [
                     email for email in emails 
-                    if 'naver.com' not in email and 'google.com' not in email
+                    if 'naver.com' not in email 
+                    and 'google.com' not in email
+                    and self.is_valid_email(email)  # 검증 추가
                 ]
                 
                 if valid_emails:
@@ -243,6 +299,9 @@ class EmailCrawler:
             # 페이지에서 이메일 추출
             page_source = self.driver.page_source
             emails = self.email_pattern.findall(page_source)
+            
+            # 유효한 이메일만 필터링
+            emails = [email for email in emails if self.is_valid_email(email)]
             
             # 유효한 이메일 필터링 (info@, ceo@, contact@ 등 우선)
             priority_keywords = ['ceo', 'info', 'contact', 'admin', 'master']
@@ -328,13 +387,14 @@ class EmailCrawler:
             logger.error(f"❌ 컬럼 추가 실패: {e}")
             return None
     
-    def crawl_all_companies(self, start_row=2, end_row=None):
+    def crawl_all_companies(self, start_row=2, end_row=None, batch_size=10):
         """
-        전체 회사 리스트 크롤링
+        전체 회사 리스트 크롤링 (배치 처리)
         
         Args:
             start_row: 시작 행 (기본값: 2, 헤더 제외)
             end_row: 종료 행 (None이면 전체)
+            batch_size: 배치 크기 (기본값: 10, 메모리 절약)
         """
         try:
             # 이메일 컬럼 추가
@@ -351,40 +411,62 @@ class EmailCrawler:
             total_count = end_row - start_row + 1
             success_count = 0
             
-            logger.info(f"📊 총 {total_count}개 회사 크롤링 시작")
+            logger.info(f"📊 총 {total_count}개 회사 크롤링 시작 (배치 크기: {batch_size})")
             
             # 환경 변수에서 딜레이 시간 가져오기
             crawl_delay = int(os.getenv('CRAWL_DELAY', '3'))
             
-            for idx in range(start_row - 1, end_row):
-                row_num = idx + 1
-                row_data = all_data[idx]
+            # 배치 단위로 처리
+            for batch_start in range(start_row - 1, end_row, batch_size):
+                batch_end = min(batch_start + batch_size, end_row)
+                batch_num = (batch_start - start_row + 1) // batch_size + 1
+                total_batches = (total_count + batch_size - 1) // batch_size
                 
-                # 회사명 (B열)
-                company_name = row_data[1] if len(row_data) > 1 else None
-                # 대표자명 (C열)
-                representative = row_data[2] if len(row_data) > 2 else None
+                logger.info(f"\n{'='*60}")
+                logger.info(f"📦 배치 {batch_num}/{total_batches} 처리 중 ({batch_end - batch_start}개)")
+                logger.info(f"{'='*60}")
                 
-                if not company_name:
-                    continue
+                for idx in range(batch_start, batch_end):
+                    row_num = idx + 1
+                    row_data = all_data[idx]
+                    
+                    # 회사명 (B열)
+                    company_name = row_data[1] if len(row_data) > 1 else None
+                    # 대표자명 (C열)
+                    representative = row_data[2] if len(row_data) > 2 else None
+                    
+                    if not company_name:
+                        continue
+                    
+                    progress = idx - start_row + 2
+                    logger.info(f"\n[{progress}/{total_count}] 처리 중: {company_name}")
+                    
+                    # 이메일 검색
+                    result = self.find_email(company_name, representative)
+                    
+                    # 결과 업데이트
+                    if result['email']:
+                        self.sheet.update_cell(row_num, email_col, result['email'])
+                        self.sheet.update_cell(row_num, email_col + 1, result['source'])
+                        self.sheet.update_cell(row_num, email_col + 2, result['confidence'])
+                        success_count += 1
+                    else:
+                        self.sheet.update_cell(row_num, email_col, '미발견')
+                        self.sheet.update_cell(row_num, email_col + 2, 'NONE')
+                    
+                    # API 제한 방지를 위한 대기
+                    time.sleep(crawl_delay)
                 
-                logger.info(f"\n[{row_num - 1}/{total_count}] 처리 중: {company_name}")
-                
-                # 이메일 검색
-                result = self.find_email(company_name, representative)
-                
-                # 결과 업데이트
-                if result['email']:
-                    self.sheet.update_cell(row_num, email_col, result['email'])
-                    self.sheet.update_cell(row_num, email_col + 1, result['source'])
-                    self.sheet.update_cell(row_num, email_col + 2, result['confidence'])
-                    success_count += 1
-                else:
-                    self.sheet.update_cell(row_num, email_col, '미발견')
-                    self.sheet.update_cell(row_num, email_col + 2, 'NONE')
-                
-                # API 제한 방지를 위한 대기
-                time.sleep(crawl_delay)
+                # 배치 처리 완료 후 브라우저 정리 (메모리 절약)
+                if batch_end < end_row:
+                    logger.info(f"\n🔄 메모리 정리 중... (다음 배치 준비)")
+                    if self.driver:
+                        self.driver.quit()
+                    time.sleep(2)
+                    # 다음 배치를 위해 드라이버 재시작
+                    if not self.setup_selenium():
+                        logger.error("Selenium 재시작 실패")
+                        return
             
             logger.info(f"\n✅ 크롤링 완료!")
             logger.info(f"📊 성공: {success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
@@ -408,6 +490,7 @@ def main():
         SPREADSHEET_KEY = os.getenv('SPREADSHEET_KEY')
         CREDENTIALS_JSON = os.getenv('GOOGLE_SHEETS_CREDENTIALS')
         START_ROW = int(os.getenv('START_ROW', '2'))
+        BATCH_SIZE = int(os.getenv('BATCH_SIZE', '10'))  # 기본값: 10개씩
         
         if not SPREADSHEET_KEY:
             raise ValueError("SPREADSHEET_KEY 환경 변수가 설정되지 않았습니다")
@@ -420,6 +503,7 @@ def main():
         logger.info("=" * 60)
         logger.info(f"📊 구글 시트 ID: {SPREADSHEET_KEY[:20]}...")
         logger.info(f"⏱️  크롤링 딜레이: {os.getenv('CRAWL_DELAY', '3')}초")
+        logger.info(f"📦 배치 크기: {BATCH_SIZE}개 (메모리 절약)")
         logger.info("=" * 60)
         
         # 크롤러 초기화
@@ -440,7 +524,7 @@ def main():
         
         # 전체 크롤링 실행
         logger.info("\n📝 크롤링을 시작합니다...\n")
-        crawler.crawl_all_companies(start_row=START_ROW)
+        crawler.crawl_all_companies(start_row=START_ROW, batch_size=BATCH_SIZE)
         
         logger.info("\n" + "=" * 60)
         logger.info("✅ 모든 작업이 완료되었습니다!")
